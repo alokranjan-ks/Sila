@@ -25,19 +25,20 @@ jobs:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           LAST_ID: ${{ vars.LAST_UPDATE_ID }}
         run: |
-          RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?limit=5")
+          OFFSET=$(( ${LAST_ID:-0} + 1 ))
+          RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${OFFSET}&limit=1")
           UPDATE_ID=$(echo "$RESPONSE" | python3 -c "
           import sys,json
           r=json.load(sys.stdin).get('result',[])
-          print(r[-1]['update_id'] if r else 0)")
+          print(r[0]['update_id'] if r else 0)")
           TEXT=$(echo "$RESPONSE" | python3 -c "
           import sys,json
           r=json.load(sys.stdin).get('result',[])
-          print(r[-1].get('message',{}).get('text','').lower().strip() if r else '')")
+          print(r[0].get('message',{}).get('text','').lower().strip() if r else '')")
           echo "update_id=$UPDATE_ID" >> $GITHUB_OUTPUT
           echo "text=$TEXT" >> $GITHUB_OUTPUT
           echo "--- update_id=$UPDATE_ID | text=$TEXT | last_processed=${LAST_ID} ---"
-          if [ "$UPDATE_ID" -le "${LAST_ID:-0}" ] || [ "$TEXT" != "stop vast" ]; then
+          if [ "$UPDATE_ID" -eq "0" ] || [ "$TEXT" != "stop vast" ]; then
             echo "No stop command. Skipping."
             echo "run=false" >> $GITHUB_OUTPUT
           else
