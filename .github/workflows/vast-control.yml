@@ -26,13 +26,13 @@ jobs:
       - name: Start Vast.ai instance
         if: ${{ inputs.action == 'start' }}
         run: |
-          vastai start instance 39915400
+          vastai start instance 40067088
           sleep 60
 
       - name: Get SSH details
         if: ${{ inputs.action == 'start' }}
         run: |
-          INFO=$(vastai show instance 39915400 --raw)
+          INFO=$(vastai show instance 40067088 --raw)
           SSH_HOST=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_host',''))")
           SSH_PORT=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_port',''))")
           echo "SSH_HOST=$SSH_HOST" >> $GITHUB_ENV
@@ -53,7 +53,7 @@ jobs:
       - name: Stop app and instance
         if: ${{ inputs.action == 'stop' }}
         run: |
-          INFO=$(vastai show instance 39915400 --raw)
+          INFO=$(vastai show instance 40067088 --raw)
           SSH_HOST=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_host',''))")
           SSH_PORT=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_port',''))")
           if [ -n "$SSH_HOST" ]; then
@@ -62,5 +62,5 @@ jobs:
             ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/vastai_key -o StrictHostKeyChecking=no "pkill -f app.py; pkill -f ngrok" || true
             rm -f /tmp/vastai_key
           fi
-          vastai stop instance 39915400
+          vastai stop instance 40067088
           echo "Instance stopped. Billing paused."

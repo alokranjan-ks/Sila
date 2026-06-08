@@ -61,7 +61,7 @@ jobs:
               --data-urlencode "text=Starting Sila Image Studio... Please wait up to 8 minutes." > /dev/null
 
             # Start instance via direct API
-            curl -s -X PUT "https://console.vast.ai/api/v0/instances/39915400/" \
+            curl -s -X PUT "https://console.vast.ai/api/v0/instances/40067088/" \
               -H "Authorization: Bearer ${VASTAI_API_KEY}" \
               -H "Content-Type: application/json" \
               -d '{"state": "running"}' > /dev/null
@@ -74,13 +74,13 @@ jobs:
             SSH_HOST=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==39915400]
+          match=[i for i in insts if i.get('id')==40067088]
           print(match[0].get('ssh_host','') if match else '')
           ")
             SSH_PORT=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==39915400]
+          match=[i for i in insts if i.get('id')==40067088]
           print(match[0].get('ssh_port','') if match else '')
           ")
             echo "SSH target: $SSH_HOST:$SSH_PORT"
@@ -129,13 +129,13 @@ jobs:
             SSH_HOST=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==39915400]
+          match=[i for i in insts if i.get('id')==40067088]
           print(match[0].get('ssh_host','') if match else '')
           ")
             SSH_PORT=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==39915400]
+          match=[i for i in insts if i.get('id')==40067088]
           print(match[0].get('ssh_port','') if match else '')
           ")
 
@@ -148,7 +148,7 @@ jobs:
             fi
 
             # Stop instance via direct API
-            curl -s -X PUT "https://console.vast.ai/api/v0/instances/39915400/" \
+            curl -s -X PUT "https://console.vast.ai/api/v0/instances/40067088/" \
               -H "Authorization: Bearer ${VASTAI_API_KEY}" \
               -H "Content-Type: application/json" \
               -d '{"state": "stopped"}' > /dev/null
