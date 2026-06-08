@@ -5,7 +5,7 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
-# CRITICAL: prevents duplicate runs from firing simultaneously
+# Prevents duplicate simultaneous runs
 concurrency:
   group: sila-telegram-bot
   cancel-in-progress: false
@@ -47,13 +47,31 @@ jobs:
             exit 0
           fi
 
-          # Update LAST_UPDATE_ID IMMEDIATELY to prevent duplicate processing
+          # Mark as processed IMMEDIATELY to block duplicate runs
           curl -s -X PATCH \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
             -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
-          echo "Marked update $UPDATE_ID as processed."
+          echo "Marked $UPDATE_ID as processed."
+
+          # Helper: get SSH details from instance list (individual endpoint returns 404)
+          get_ssh_details() {
+            INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
+              -H "Authorization: Bearer ${VASTAI_API_KEY}")
+            SSH_HOST=$(echo "$INFO" | python3 -c "
+          import sys,json
+          insts=json.load(sys.stdin).get('instances',[])
+          match=[i for i in insts if i.get('id')==39915400]
+          print(match[0].get('ssh_host','') if match else '')
+          ")
+            SSH_PORT=$(echo "$INFO" | python3 -c "
+          import sys,json
+          insts=json.load(sys.stdin).get('instances',[])
+          match=[i for i in insts if i.get('id')==39915400]
+          print(match[0].get('ssh_port','') if match else '')
+          ")
+          }
 
           if [ "$TEXT" = "start vast" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
@@ -65,22 +83,21 @@ jobs:
               -H "Authorization: Bearer ${VASTAI_API_KEY}" \
               -H "Content-Type: application/json" \
               -d '{"state": "running"}' > /dev/null
+            echo "Instance start command sent."
 
-            # Wait for instance to register then get SSH details
+            # Get SSH details
             sleep 15
-            INFO=$(curl -s "https://console.vast.ai/api/v1/instances/39915400/" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}")
-            SSH_HOST=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); inst=d.get('instances',[d]); print((inst[0] if isinstance(inst,list) else d).get('ssh_host',''))")
-            SSH_PORT=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); inst=d.get('instances',[d]); print((inst[0] if isinstance(inst,list) else d).get('ssh_port',''))")
-            echo "Waiting for SSH on $SSH_HOST:$SSH_PORT ..."
+            get_ssh_details
+            echo "SSH target: $SSH_HOST:$SSH_PORT"
 
+            # Poll SSH port every 10s up to 5 minutes
             for i in $(seq 1 30); do
               sleep 10
-              if nc -z -w5 $SSH_HOST $SSH_PORT 2>/dev/null; then
-                echo "SSH port is open after ${i}0 seconds!"
+              if timeout 5 bash -c "echo >/dev/tcp/$SSH_HOST/$SSH_PORT" 2>/dev/null; then
+                echo "SSH open after ${i}0s!"
                 break
               fi
-              echo "  Attempt $i: SSH not ready yet..."
+              echo "  Attempt $i: not ready..."
             done
 
             sleep 5
@@ -101,12 +118,7 @@ jobs:
               -d "chat_id=${TG_CHAT_ID}" \
               --data-urlencode "text=Stopping Sila Image Studio..." > /dev/null
 
-            # Get SSH details to gracefully stop app first
-            INFO=$(curl -s "https://console.vast.ai/api/v1/instances/39915400/" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}")
-            SSH_HOST=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); inst=d.get('instances',[d]); print((inst[0] if isinstance(inst,list) else d).get('ssh_host',''))")
-            SSH_PORT=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); inst=d.get('instances',[d]); print((inst[0] if isinstance(inst,list) else d).get('ssh_port',''))")
-
+            get_ssh_details
             if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
               echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
               ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
@@ -120,6 +132,7 @@ jobs:
               -H "Authorization: Bearer ${VASTAI_API_KEY}" \
               -H "Content-Type: application/json" \
               -d '{"state": "stopped"}' > /dev/null
+            echo "Stop command sent."
 
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
