@@ -37,7 +37,7 @@ jobs:
           print(r[-1].get('message',{}).get('text','').lower().strip() if r else '')
           ")
 
-          echo "Latest update_id=$UPDATE_ID text='$TEXT' last_processed=${LAST_ID}"
+          echo "update_id=$UPDATE_ID text='$TEXT' last_processed=${LAST_ID}"
 
           if [ "$UPDATE_ID" -le "${LAST_ID:-0}" ]; then
             echo "No new commands."
@@ -52,23 +52,29 @@ jobs:
             vastai set api-key $VASTAI_API_KEY
             vastai start instance 39915400
 
-            echo "Waiting 90 seconds for instance to boot..."
-            sleep 90
-
+            # Wait for SSH port to be open (poll every 10s, up to 5 minutes)
             INFO=$(vastai show instance 39915400 --raw)
             SSH_HOST=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_host',''))")
             SSH_PORT=$(echo "$INFO" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ssh_port',''))")
-            echo "SSH: $SSH_HOST:$SSH_PORT"
+            echo "Waiting for SSH on $SSH_HOST:$SSH_PORT ..."
 
+            for i in $(seq 1 30); do
+              sleep 10
+              if nc -z -w5 $SSH_HOST $SSH_PORT 2>/dev/null; then
+                echo "SSH port is open after ${i}0 seconds!"
+                break
+              fi
+              echo "  Attempt $i: SSH not ready yet..."
+            done
+
+            # Extra 5s for SSH daemon to fully start
+            sleep 5
             echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
 
-            # Retry SSH up to 4 times (instance may still be booting)
-            for attempt in 1 2 3 4; do
-              echo "SSH attempt $attempt..."
-              ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key -o StrictHostKeyChecking=no -o ConnectTimeout=20 "bash /workspace/start.sh" && break
-              echo "Not ready yet, waiting 20 more seconds..."
-              sleep 20
-            done
+            ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=30 \
+              "bash /workspace/start.sh"
             rm -f /tmp/key
 
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
@@ -87,7 +93,9 @@ jobs:
 
             if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
               echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
-              ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key -o StrictHostKeyChecking=no -o ConnectTimeout=15 "pkill -f app.py; pkill -f ngrok" || true
+              ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
+                -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+                "pkill -f app.py; pkill -f ngrok" || true
               rm -f /tmp/key
             fi
 
