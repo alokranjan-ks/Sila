@@ -81,7 +81,7 @@ jobs:
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
           match=[i for i in insts if i.get('id')==40067088]
-          print(match[0].get('ssh_port','') if match else '')
+          print(int(match[0].get('ssh_port',0))+1 if match else '')
           ")
             echo "SSH target: $SSH_HOST:$SSH_PORT"
 
@@ -136,7 +136,7 @@ jobs:
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
           match=[i for i in insts if i.get('id')==40067088]
-          print(match[0].get('ssh_port','') if match else '')
+          print(int(match[0].get('ssh_port',0))+1 if match else '')
           ")
 
             if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
