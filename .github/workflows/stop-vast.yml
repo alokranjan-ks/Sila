@@ -24,6 +24,8 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           LAST_ID: ${{ vars.LAST_UPDATE_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_REPO: alokranjan-ks/Sila
         run: |
           OFFSET=$(( ${LAST_ID:-0} + 1 ))
           RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${OFFSET}&limit=1")
@@ -38,8 +40,15 @@ jobs:
           echo "update_id=$UPDATE_ID" >> $GITHUB_OUTPUT
           echo "text=$TEXT" >> $GITHUB_OUTPUT
           echo "--- update_id=$UPDATE_ID | text=$TEXT | last_processed=${LAST_ID} ---"
-          if [ "$UPDATE_ID" -eq "0" ] || [ "$TEXT" != "stop vast" ]; then
-            echo "No stop command. Skipping."
+          if [ "$UPDATE_ID" -eq "0" ]; then
+            echo "No new messages. Skipping."
+            echo "run=false" >> $GITHUB_OUTPUT
+          elif [ "$TEXT" != "stop vast" ]; then
+            echo "Message is not 'stop vast' (got: $TEXT). Advancing counter and skipping."
+            curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
+              -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
             echo "run=false" >> $GITHUB_OUTPUT
           else
             echo "run=true" >> $GITHUB_OUTPUT
