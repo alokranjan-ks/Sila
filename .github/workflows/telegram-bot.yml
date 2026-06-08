@@ -5,10 +5,13 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
-# Prevents duplicate simultaneous runs
 concurrency:
   group: sila-telegram-bot
   cancel-in-progress: false
+
+env:
+  SILA_URL: https://capsule-retiree-shorty.ngrok-free.dev
+  INSTANCE_ID: "40067088"
 
 jobs:
   check-telegram:
@@ -16,7 +19,40 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Check Telegram and act
+      - name: Read latest Telegram message
+        id: tg
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          LAST_ID: ${{ vars.LAST_UPDATE_ID }}
+        run: |
+          RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?limit=5")
+
+          UPDATE_ID=$(echo "$RESPONSE" | python3 -c "
+          import sys,json
+          r=json.load(sys.stdin).get('result',[])
+          print(r[-1]['update_id'] if r else 0)")
+
+          TEXT=$(echo "$RESPONSE" | python3 -c "
+          import sys,json
+          r=json.load(sys.stdin).get('result',[])
+          print(r[-1].get('message',{}).get('text','').lower().strip() if r else '')")
+
+          echo "update_id=$UPDATE_ID" >> $GITHUB_OUTPUT
+          echo "text=$TEXT" >> $GITHUB_OUTPUT
+          echo "--- update_id=$UPDATE_ID | text=$TEXT | last_processed=${LAST_ID} ---"
+
+          if [ "$UPDATE_ID" -le "${LAST_ID:-0}" ]; then
+            echo "No new commands."
+            echo "has_command=false" >> $GITHUB_OUTPUT
+          else
+            echo "has_command=true" >> $GITHUB_OUTPUT
+          fi
+
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      #   START VAST
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      - name: START VAST - Boot instance and launch app
+        if: steps.tg.outputs.has_command == 'true' && steps.tg.outputs.text == 'start vast'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -24,142 +60,146 @@ jobs:
           GH_REPO: alokranjan-ks/Sila
           VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
           SSH_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY }}
-          LAST_ID: ${{ vars.LAST_UPDATE_ID }}
+          UPDATE_ID: ${{ steps.tg.outputs.update_id }}
         run: |
-          RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?limit=5")
-          UPDATE_ID=$(echo "$RESPONSE" | python3 -c "
-          import sys,json
-          d=json.load(sys.stdin)
-          r=d.get('result',[])
-          print(r[-1]['update_id'] if r else 0)
-          ")
-          TEXT=$(echo "$RESPONSE" | python3 -c "
-          import sys,json
-          d=json.load(sys.stdin)
-          r=d.get('result',[])
-          print(r[-1].get('message',{}).get('text','').lower().strip() if r else '')
-          ")
-
-          echo "update_id=$UPDATE_ID text='$TEXT' last_processed=${LAST_ID}"
-
-          if [ "$UPDATE_ID" -le "${LAST_ID:-0}" ]; then
-            echo "No new commands."
-            exit 0
-          fi
-
-          # Mark as processed IMMEDIATELY to block duplicate runs
-          curl -s -X PATCH \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
+          # Mark as processed immediately
+          curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
             -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
-          echo "Marked $UPDATE_ID as processed."
 
-          if [ "$TEXT" = "start vast" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Starting Sila Image Studio... Please wait up to 8 minutes." > /dev/null
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=Starting Sila Image Studio... Please wait up to 8 minutes. URL will be: ${SILA_URL}" > /dev/null
 
-            # Start instance via direct API
-            curl -s -X PUT "https://console.vast.ai/api/v0/instances/40067088/" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}" \
-              -H "Content-Type: application/json" \
-              -d '{"state": "running"}' > /dev/null
-            echo "Instance start command sent."
+          # Start instance via API
+          curl -s -X PUT "https://console.vast.ai/api/v0/instances/${INSTANCE_ID}/" \
+            -H "Authorization: Bearer ${VASTAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"state": "running"}' > /dev/null
+          echo "Instance start command sent."
 
-            # Get SSH details from list endpoint (individual endpoint returns 404)
-            sleep 15
-            INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}")
-            SSH_HOST=$(echo "$INFO" | python3 -c "
+          # Get SSH details (wait 15s for instance to register)
+          sleep 15
+          INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
+            -H "Authorization: Bearer ${VASTAI_API_KEY}")
+          SSH_HOST=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==40067088]
-          print(match[0].get('ssh_host','') if match else '')
-          ")
-            SSH_PORT=$(echo "$INFO" | python3 -c "
+          match=[i for i in insts if str(i.get('id'))==str(${INSTANCE_ID})]
+          print(match[0].get('ssh_host','') if match else '')")
+          SSH_PORT=$(echo "$INFO" | python3 -c "
           import sys,json
           insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==40067088]
-          print(int(match[0].get('ssh_port',0))+1 if match else '')
-          ")
-            echo "SSH target: $SSH_HOST:$SSH_PORT"
+          match=[i for i in insts if str(i.get('id'))==str(${INSTANCE_ID})]
+          print(int(match[0].get('ssh_port',0))+1 if match else 0)")
+          echo "SSH target: $SSH_HOST:$SSH_PORT"
 
-            # Poll SSH port every 10s — up to 8 minutes (48 attempts)
-            # Instance boot typically takes 6-8 minutes
-            SSH_READY=0
-            for i in $(seq 1 48); do
-              sleep 10
-              if nc -z -w5 "$SSH_HOST" "$SSH_PORT" 2>/dev/null; then
-                echo "SSH open after ${i}0s!"
-                SSH_READY=1
-                break
-              fi
-              echo "  Attempt $i/48: not ready..."
-            done
-
-            if [ "$SSH_READY" = "0" ]; then
-              curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-                -d "chat_id=${TG_CHAT_ID}" \
-                --data-urlencode "text=Instance is taking longer than expected. Send Start Vast again in 2 minutes." > /dev/null
-              exit 1
+          # Poll SSH port every 10s - up to 8 minutes (48 attempts)
+          SSH_READY=0
+          for i in $(seq 1 48); do
+            sleep 10
+            if nc -z -w5 "$SSH_HOST" "$SSH_PORT" 2>/dev/null; then
+              echo "SSH open after ${i}0s!"
+              SSH_READY=1
+              break
             fi
+            echo "  Attempt $i/48: not ready..."
+          done
 
-            sleep 5
-            echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
-
-            ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
-              -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=30 \
-              "bash /workspace/start.sh"
-            rm -f /tmp/key
-
+          if [ "$SSH_READY" = "0" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Sila is LIVE! Open: https://capsule-retiree-shorty.ngrok-free.dev" > /dev/null
-
-          elif [ "$TEXT" = "stop vast" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Stopping Sila Image Studio..." > /dev/null
-
-            # Get SSH details
-            INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}")
-            SSH_HOST=$(echo "$INFO" | python3 -c "
-          import sys,json
-          insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==40067088]
-          print(match[0].get('ssh_host','') if match else '')
-          ")
-            SSH_PORT=$(echo "$INFO" | python3 -c "
-          import sys,json
-          insts=json.load(sys.stdin).get('instances',[])
-          match=[i for i in insts if i.get('id')==40067088]
-          print(int(match[0].get('ssh_port',0))+1 if match else '')
-          ")
-
-            if [ -n "$SSH_HOST" ] && [ -n "$SSH_PORT" ]; then
-              echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
-              ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
-                -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-                "pkill -f app.py; pkill -f ngrok; echo Done" || true
-              rm -f /tmp/key
-            fi
-
-            # Stop instance via direct API
-            curl -s -X PUT "https://console.vast.ai/api/v0/instances/40067088/" \
-              -H "Authorization: Bearer ${VASTAI_API_KEY}" \
-              -H "Content-Type: application/json" \
-              -d '{"state": "stopped"}' > /dev/null
-            echo "Stop command sent."
-
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Sila stopped. Billing paused (disk only)." > /dev/null
-
-          else
-            curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Send: Start Vast to start, or Stop Vast to stop." > /dev/null
+              --data-urlencode "text=Instance taking longer than expected. Send Start Vast again in 2 minutes. URL: ${SILA_URL}" > /dev/null
+            exit 1
           fi
+
+          sleep 5
+          echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
+          ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=30 \
+            "bash /workspace/start.sh"
+          rm -f /tmp/key
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=Sila is LIVE! Open here: ${SILA_URL}" > /dev/null
+
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      #   STOP VAST
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      - name: STOP VAST - Shutdown app and stop instance
+        if: steps.tg.outputs.has_command == 'true' && steps.tg.outputs.text == 'stop vast'
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_REPO: alokranjan-ks/Sila
+          VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
+          SSH_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY }}
+          UPDATE_ID: ${{ steps.tg.outputs.update_id }}
+        run: |
+          # Mark as processed immediately
+          curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
+            -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=Stopping Sila Image Studio..." > /dev/null
+
+          # Get SSH details to gracefully stop app first
+          INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
+            -H "Authorization: Bearer ${VASTAI_API_KEY}")
+          SSH_HOST=$(echo "$INFO" | python3 -c "
+          import sys,json
+          insts=json.load(sys.stdin).get('instances',[])
+          match=[i for i in insts if str(i.get('id'))==str(${INSTANCE_ID})]
+          print(match[0].get('ssh_host','') if match else '')")
+          SSH_PORT=$(echo "$INFO" | python3 -c "
+          import sys,json
+          insts=json.load(sys.stdin).get('instances',[])
+          match=[i for i in insts if str(i.get('id'))==str(${INSTANCE_ID})]
+          print(int(match[0].get('ssh_port',0))+1 if match else 0)")
+
+          if [ -n "$SSH_HOST" ] && [ "$SSH_PORT" != "0" ] && [ "$SSH_PORT" != "1" ]; then
+            echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
+            ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
+              -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+              "pkill -f app.py; pkill -f ngrok; echo Done" || true
+            rm -f /tmp/key
+          fi
+
+          # Stop instance via API
+          curl -s -X PUT "https://console.vast.ai/api/v0/instances/${INSTANCE_ID}/" \
+            -H "Authorization: Bearer ${VASTAI_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d '{"state": "stopped"}' > /dev/null
+          echo "Stop command sent."
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=Sila stopped. Billing paused (disk only). To restart send: Start Vast" > /dev/null
+
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      #   UNKNOWN COMMAND
+      # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+      - name: Unknown command - send help
+        if: steps.tg.outputs.has_command == 'true' && steps.tg.outputs.text != 'start vast' && steps.tg.outputs.text != 'stop vast'
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_REPO: alokranjan-ks/Sila
+          UPDATE_ID: ${{ steps.tg.outputs.update_id }}
+        run: |
+          curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
+            -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
+
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            -d "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=Commands: Start Vast (start the app) or Stop Vast (stop and pause billing). URL: ${SILA_URL}" > /dev/null
