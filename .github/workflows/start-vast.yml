@@ -2,12 +2,6 @@ name: Start Vast
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '*/5 * * * *'
-
-concurrency:
-  group: sila-start-vast
-  cancel-in-progress: false
 
 env:
   SILA_URL: https://capsule-retiree-shorty.ngrok-free.dev
@@ -19,67 +13,21 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Read latest Telegram message
-        id: tg
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          LAST_ID: ${{ vars.LAST_UPDATE_ID }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GH_REPO: alokranjan-ks/Sila
-        run: |
-          OFFSET=$(( ${LAST_ID:-0} + 1 ))
-          RESPONSE=$(curl -s "https://api.telegram.org/bot${TG_TOKEN}/getUpdates?offset=${OFFSET}&limit=1")
-          UPDATE_ID=$(echo "$RESPONSE" | python3 -c "
-          import sys,json
-          r=json.load(sys.stdin).get('result',[])
-          print(r[0]['update_id'] if r else 0)")
-          TEXT=$(echo "$RESPONSE" | python3 -c "
-          import sys,json
-          r=json.load(sys.stdin).get('result',[])
-          print(r[0].get('message',{}).get('text','').lower().strip() if r else '')")
-          echo "update_id=$UPDATE_ID" >> $GITHUB_OUTPUT
-          echo "text=$TEXT" >> $GITHUB_OUTPUT
-          echo "--- update_id=$UPDATE_ID | text=$TEXT | last_processed=${LAST_ID} ---"
-          if [ "$UPDATE_ID" -eq "0" ]; then
-            echo "No new messages. Skipping."
-            echo "run=false" >> $GITHUB_OUTPUT
-          elif [ "$TEXT" != "start vast" ]; then
-            echo "Message is not 'start vast' (got: $TEXT). Advancing counter and skipping."
-            curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
-              -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
-            echo "run=false" >> $GITHUB_OUTPUT
-          else
-            echo "run=true" >> $GITHUB_OUTPUT
-          fi
-
       - name: START VAST - Boot instance and launch Sila
-        if: steps.tg.outputs.run == 'true'
         env:
           TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GH_REPO: alokranjan-ks/Sila
           VASTAI_API_KEY: ${{ secrets.VASTAI_API_KEY }}
           SSH_KEY_CONTENT: ${{ secrets.SSH_PRIVATE_KEY }}
-          UPDATE_ID: ${{ steps.tg.outputs.update_id }}
         run: |
-          curl -s -X PATCH -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GH_REPO}/actions/variables/LAST_UPDATE_ID" \
-            -d "{\"name\":\"LAST_UPDATE_ID\",\"value\":\"${UPDATE_ID}\"}" > /dev/null
-
-          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            -d "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=Starting Sila... Please wait up to 8 min. URL: ${SILA_URL}" > /dev/null
-
+          # Boot the instance
           curl -s -X PUT "https://console.vast.ai/api/v0/instances/${INSTANCE_ID}/" \
             -H "Authorization: Bearer ${VASTAI_API_KEY}" \
             -H "Content-Type: application/json" \
             -d '{"state": "running"}' > /dev/null
           echo "Instance start command sent."
 
+          # Wait for instance to register then get SSH details
           sleep 15
           INFO=$(curl -s "https://console.vast.ai/api/v1/instances/?owner=me" \
             -H "Authorization: Bearer ${VASTAI_API_KEY}")
@@ -95,6 +43,7 @@ jobs:
           print(int(m[0].get('ssh_port',0))+1 if m else 0)")
           echo "SSH target: $SSH_HOST:$SSH_PORT"
 
+          # Poll SSH - up to 8 minutes (48 x 10s)
           SSH_READY=0
           for i in $(seq 1 48); do
             sleep 10
@@ -109,10 +58,11 @@ jobs:
           if [ "$SSH_READY" = "0" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=Still booting. Send Start Vast again in 2 min. URL: ${SILA_URL}" > /dev/null
+              --data-urlencode "text=Still booting after 8 min. Send Start Vast again. URL: ${SILA_URL}" > /dev/null
             exit 1
           fi
 
+          # Run start script via SSH
           sleep 5
           echo "$SSH_KEY_CONTENT" > /tmp/key && chmod 600 /tmp/key
           ssh -p $SSH_PORT root@$SSH_HOST -i /tmp/key \
@@ -120,6 +70,7 @@ jobs:
             "bash /workspace/start.sh"
           rm /tmp/key
 
+          # Send live notification
           curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             -d "chat_id=${TG_CHAT_ID}" \
             --data-urlencode "text=Sila is LIVE! Open here: ${SILA_URL}" > /dev/null
